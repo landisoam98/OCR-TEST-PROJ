@@ -1,0 +1,48 @@
+name: Build Windows installer
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller pytest reportlab
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Download the OCR models into the package (so the installer works offline)
+        run: python -c "from rapidocr import RapidOCR; RapidOCR()"
+
+      - name: Build BHP Scanner.exe
+        run: pyinstaller --noconfirm --onedir --name "BHP Scanner" --paths . --collect-all rapidocr --collect-all pypdfium2 --collect-all pypdfium2_raw packaging/entry.py
+
+      - name: Smoke test the built exe (folders + bundled OCR models)
+        shell: pwsh
+        run: |
+          $d = "$env:RUNNER_TEMP\smoke"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          "inbox: '$d\in'`noutput_root: '$d\out'`nengine: local" | Set-Content "$d\config.yaml"
+          & "dist\BHP Scanner\BHP Scanner.exe" --config "$d\config.yaml" selftest
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $v = python -c "import dnfiler; print(dnfiler.__version__)"
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DAppVersion=$v" installer\bhp-scanner.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BHP-Scanner-Setup
+          path: installer/Output/*.exe
